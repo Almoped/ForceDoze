@@ -57,7 +57,8 @@ public class ForceDozeService extends Service {
     boolean hasWiFiTimedOut = false;
     boolean tryingToConnectWiFi = false;
     boolean optionTryWiFi = true;
-    boolean screenOn = false;
+    boolean screenOn = false; //use this or pass around context
+    boolean shouldBeDozing = false;
     int wiFiConnectSecs = 15;
     int wiFiCooldownMins = 20;
     long lastWiFiTimeOut = 0;
@@ -228,6 +229,7 @@ public class ForceDozeService extends Service {
             timeEnterDoze = System.currentTimeMillis();
             lastDozeEnterBatteryLife = Utils.getBatteryLevel2(getApplicationContext());
             Log.i(TAG, "Entering Doze");
+            shouldBeDozing = true;
             if (Utils.isDeviceRunningOnNPreview()) {
                 executeCommand("dumpsys deviceidle force-idle deep");
             } else {
@@ -246,7 +248,7 @@ public class ForceDozeService extends Service {
                         public void run() {
                             Log.i(TAG, "Disabling motion sensors");
                             if (sensorWhitelistPackage.equals("")) {
-                                executeCommand("dumpsys sensorservice restrict");
+                                executeCommand("dumpsys sensorservice restrict com.android.server.display");
                             } else {
                                 Log.i(TAG, "Package " + sensorWhitelistPackage + " is whitelisted from sensorservice");
                                 Log.i(TAG, "Note: Packages that get whitelisted are supposed to request sensor access again, if the app doesn't work, email the dev of that app!");
@@ -265,6 +267,8 @@ public class ForceDozeService extends Service {
                 wasWiFiTurnedOn = Utils.isWiFiEnabled(context);
                 Log.i(TAG, "wasWiFiTurnedOn: " + wasWiFiTurnedOn);
                 if (wasWiFiTurnedOn) {
+                    if (optionTryWiFi) //User enabled wifi during a timeout
+                        hasWiFiTimedOut = false;
                     Log.i(TAG, "Disabling WiFi");
                     disableWiFi();
                 }
@@ -303,6 +307,7 @@ public class ForceDozeService extends Service {
         timeExitDoze = System.currentTimeMillis();
         lastDozeExitBatteryLife = Utils.getBatteryLevel2(getApplicationContext());
         lastKnownState = "ACTIVE";
+        shouldBeDozing = false;
         if (Utils.isDeviceRunningOnNPreview()) {
             executeCommand("dumpsys deviceidle unforce");
         } else {
@@ -645,7 +650,6 @@ public class ForceDozeService extends Service {
                         enableWiFi();
                         wasWiFiTurnedOn = false;
                     }
-
                 }
 
                 if (turnOffDataInDoze) {
@@ -657,7 +661,7 @@ public class ForceDozeService extends Service {
                     }
                 }
 
-                if (getDeviceIdleState().equals("IDLE") || getDeviceIdleState().equals("INACTIVE") || lastKnownState.equals("IDLE")) {
+                if (getDeviceIdleState().equals("IDLE") || getDeviceIdleState().equals("INACTIVE") || lastKnownState.equals("IDLE")) { //restriction could keep device in limbo
                     Log.i(TAG, "Exiting Doze");
                     exitDoze();
                 } else {
@@ -716,9 +720,30 @@ public class ForceDozeService extends Service {
                 lastKnownState = getDeviceIdleState();
                 Log.i(TAG, "State seems to be: " + lastKnownState);
 
-                if (tempWakeLock != null) {
-                    if (tempWakeLock.isHeld()) {
-                        Log.i(TAG, "WL still held in onReceive() at MODE_CHANGED");
+                if ((tempWakeLock != null) && tempWakeLock.isHeld()) {
+                    Log.i(TAG, "WL still held in onReceive() at MODE_CHANGED");
+                } else {
+                    if (!screenOn && shouldBeDozing && getDeviceIdleState().equals("IDLE_PENDING")) {
+                        Log.i(TAG, "Device might not be dozing when screen off, trying again.");
+                        if (Utils.isDeviceRunningOnNPreview()) {
+                            executeCommand("dumpsys deviceidle force-idle deep");
+                        } else {
+                            executeCommand("dumpsys deviceidle force-idle");
+                        }
+                    }
+                }
+
+                if (screenOn && !getDeviceIdleState().equals("ACTIVE")) {
+                    if (shouldBeDozing) {
+                        Log.i(TAG, "Retrying exitdoze.");
+                        exitDoze();
+                    } else {
+                        Log.i(TAG, "Device not active when screen on, taking a step.");
+                        if (Utils.isDeviceRunningOnNPreview()) {
+                            executeCommand("dumpsys deviceidle unforce");
+                        } else {
+                            executeCommand("dumpsys deviceidle step");
+                        }
                     }
                 }
 
@@ -757,7 +782,6 @@ public class ForceDozeService extends Service {
                                 Log.i(TAG, "Disabling WiFi");
                                 disableWiFi();
                             }
-
                         }
 
                         if (turnOffDataInDoze) {
